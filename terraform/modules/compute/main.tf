@@ -1,3 +1,13 @@
+terraform {
+  required_version = ">= 1.9.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "= 5.82.0"
+    }
+  }
+}
+
 resource "aws_ecr_repository" "app" {                                    //creates a private Docker image registry in AWS
   name                 = "${var.project_name}-${var.environment}"
   image_tag_mutability = "MUTABLE"                                       //allows overwriting image tags

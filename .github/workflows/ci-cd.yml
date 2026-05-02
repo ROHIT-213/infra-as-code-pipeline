@@ -48,19 +48,19 @@ jobs:
 
       - name: Run tflint - networking
         working-directory: terraform/modules/networking
-        run: tflint --init && tflint
+        run: tflint --init && tflint --config=.tflint.hcl
 
       - name: Run tflint - compute
         working-directory: terraform/modules/compute
-        run: tflint
+        run: tflint --config=.tflint.hcl
 
       - name: Run tflint - security
         working-directory: terraform/modules/security
-        run: tflint
+        run: tflint --config=.tflint.hcl
 
       - name: Run tflint - monitoring
         working-directory: terraform/modules/monitoring
-        run: tflint
+        run: tflint --config=.tflint.hcl
 
       - name: Run tfsec - Terraform security scan
         uses: aquasecurity/tfsec-action@v1.0.0

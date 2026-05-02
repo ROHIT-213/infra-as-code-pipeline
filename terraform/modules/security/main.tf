@@ -1,3 +1,13 @@
+terraform {
+  required_version = ">= 1.9.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "= 5.82.0"
+    }
+  }
+}
+
 resource "aws_security_group" "alb_sg" {
   name        = "${var.project_name}-${var.environment}-alb-sg"
   description = "Security group for ALB - allows HTTP/HTTPS from internet"
