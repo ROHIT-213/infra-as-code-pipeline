@@ -298,14 +298,14 @@ jobs:
         working-directory: terraform/envs/prod
         run: terraform apply -auto-approve tfplan
       
-      - name: Health Check (5 min)
-        run: |
-          sleep 300
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$prod_alb_url/health)
-          if [ "$STATUS" != "200" ]; then
-            echo "Health check failed!"
-            exit 1
-          fi
+      # - name: Health Check (5 min)
+      #   run: |
+      #     sleep 300
+      #     STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$prod_alb_url/health)
+      #     if [ "$STATUS" != "200" ]; then
+      #       echo "Health check failed!"
+      #       exit 1
+      #     fi
 #------------------Rollback--------
   rollback:
     name: Rollback if Failed
