@@ -45,4 +45,5 @@ module "monitoring" {
   ecs_cluster_name = module.compute.ecs_cluster_name
   ecs_service_name = module.compute.ecs_service_name
   alb_arn_suffix   = module.compute.alb_arn_suffix
+  aws_region       = var.aws_region                       //line added to pass AWS region to monitoring module for CloudWatch log group creation
 }

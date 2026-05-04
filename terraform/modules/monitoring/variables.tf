@@ -22,3 +22,7 @@ variable "alb_arn_suffix" {
   description = "ALB ARN suffix from compute module (used for ALB metrics)"
   type        = string
 }
+
+variable "aws_region" {
+  type = string
+}

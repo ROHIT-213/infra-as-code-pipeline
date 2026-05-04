@@ -77,34 +77,37 @@ resource "aws_cloudwatch_dashboard" "main" {
   dashboard_name = "${var.project_name}-${var.environment}-dashboard"
 
   dashboard_body = jsonencode({
-    widgets = [
-      {
-        type = "metric"
-        properties = {
-          title  = "ECS CPU Utilization"
-          metrics = [["AWS/ECS", "CPUUtilization", "ClusterName", var.ecs_cluster_name, "ServiceName", var.ecs_service_name]]
-          period = 60
-          stat   = "Average"
-        }
-      },
-      {
-        type = "metric"
-        properties = {
-          title  = "ECS Memory Utilization"
-          metrics = [["AWS/ECS", "MemoryUtilization", "ClusterName", var.ecs_cluster_name, "ServiceName", var.ecs_service_name]]
-          period = 60
-          stat   = "Average"
-        }
-      },
-      {
-        type = "metric"
-        properties = {
-          title  = "ALB 5xx Errors"
-          metrics = [["AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", "LoadBalancer", var.alb_arn_suffix]]
-          period = 60
-          stat   = "Sum"
-        }
+  widgets = [
+    {
+      type   = "metric"
+      x      = 0
+      y      = 0
+      width  = 12
+      height = 6
+
+      properties = {
+        metrics = [
+          ["AWS/ECS", "CPUUtilization", "ClusterName", var.ecs_cluster_name]
+        ]
+        region = var.aws_region
+        title  = "ECS CPU Utilization"
       }
-    ]
-  })
+    },
+    {
+      type   = "metric"
+      x      = 12
+      y      = 0
+      width  = 12
+      height = 6
+
+      properties = {
+        metrics = [
+          ["AWS/ECS", "MemoryUtilization", "ClusterName", var.ecs_cluster_name]
+        ]
+        region = var.aws_region
+        title  = "ECS Memory Utilization"
+      }
+    }
+  ]
+})
 }

@@ -6,16 +6,22 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   AWS_REGION: ap-south-1
   PROJECT_NAME: infra-pipeline
   APP_PORT: 3000
+  TF_IN_AUTOMATION: true
 
+# -------------------- JOB 1: LINT + SECURITY --------------------
 jobs:
-  # --- JOB 1: Lint + tfsec ---------------------------------------------------
   lint:
     name: Lint and Security Scan
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -43,37 +49,28 @@ jobs:
           terraform validate
 
       - name: Install tflint
+        run: curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+
+      - name: Run tflint
         run: |
-          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+          cd terraform/modules/networking && tflint --init && tflint
+          cd ../compute && tflint
+          cd ../security && tflint
+          cd ../monitoring && tflint
 
-      - name: Run tflint - networking
-        working-directory: terraform/modules/networking
-        run: tflint --init && tflint --config=.tflint.hcl
-
-      - name: Run tflint - compute
-        working-directory: terraform/modules/compute
-        run: tflint --config=.tflint.hcl
-
-      - name: Run tflint - security
-        working-directory: terraform/modules/security
-        run: tflint --config=.tflint.hcl
-
-      - name: Run tflint - monitoring
-        working-directory: terraform/modules/monitoring
-        run: tflint --config=.tflint.hcl
-
-      - name: Run tfsec - Terraform security scan
+      - name: Run tfsec
         uses: aquasecurity/tfsec-action@v1.0.0
         with:
           working_directory: terraform
           soft_fail: true
 
-  # --- JOB 2: Infracost ------------------------------------------------------
+# -------------------- JOB 2: COST --------------------
   infracost:
     name: Cost Estimation
     runs-on: ubuntu-latest
     needs: lint
     continue-on-error: true
+
     steps:
       - uses: actions/checkout@v4
 
@@ -82,104 +79,123 @@ jobs:
         with:
           api-key: ${{ secrets.INFRACOST_API_KEY }}
 
-      - name: Infracost estimate - staging
-        run: |
-          infracost breakdown \
-            --path terraform/envs/staging \
-            --terraform-var-file terraform.tfvars \
-            --format table
+      - name: Infracost staging
+        run: infracost breakdown --path terraform/envs/staging --format table
 
-      - name: Infracost estimate - prod
-        run: |
-          infracost breakdown \
-            --path terraform/envs/prod \
-            --terraform-var-file terraform.tfvars \
-            --format table
+      - name: Infracost prod
+        run: infracost breakdown --path terraform/envs/prod --format table
 
-  # --- JOB 3: Docker Build ---------------------------------------------------
+# -------------------- JOB 3: BUILD --------------------
   build:
     name: Docker Build and Test
     runs-on: ubuntu-latest
     needs: lint
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
+      - name: Build image
         working-directory: apps
         run: docker build -t ${{ env.PROJECT_NAME }}:${{ github.sha }} .
 
-      - name: Test health endpoint
+      - name: Test container
         run: |
           docker run -d -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \
             --name test-app \
             ${{ env.PROJECT_NAME }}:${{ github.sha }}
+
           sleep 5
           curl -f http://localhost:${{ env.APP_PORT }}/health
           docker stop test-app
 
-  # --- JOB 4: Trivy Docker Security Scan ------------------------------------
-  trivy-scan:
-    name: Trivy Docker Security Scan
+# -------------------- JOB 4: SECURITY SCAN --------------------
+  trivy:
+    name: Trivy Scan
     runs-on: ubuntu-latest
     needs: build
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build image for scanning
+      - name: Build image
         working-directory: apps
         run: docker build -t ${{ env.PROJECT_NAME }}:${{ github.sha }} .
 
-      - name: Run Trivy vulnerability scanner
+      - name: Scan image
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.PROJECT_NAME }}:${{ github.sha }}
-          format: table
-          exit-code: 1
           severity: CRITICAL,HIGH
-          skip-dirs: /usr/local/lib/node_modules/npm
+          exit-code: 1
 
-  # --- JOB 5: Push to ECR ---------------------------------------------------
+# -------------------- JOB 5: TERRAFORM STAGING INFRA --------------------
+  terraform-staging:
+    name: Terraform Staging Infra
+    runs-on: ubuntu-latest
+    needs: trivy
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: terraform/envs/staging
+        run: terraform init
+
+      - name: Terraform Apply (Create Infra)
+        working-directory: terraform/envs/staging
+        run: terraform apply -auto-approve
+
+# -------------------- JOB 6: PUSH --------------------
   push:
     name: Push to ECR
     runs-on: ubuntu-latest
-    needs: trivy-scan
+    needs: terraform-staging
     outputs:
-      image_uri: ${{ steps.build-push.outputs.image_uri }}
+      image_uri: ${{ steps.build.outputs.image }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to ECR
-        id: login-ecr
+      - name: Login ECR
+        id: login
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push to ECR
-        id: build-push
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ env.PROJECT_NAME }}-staging
+      - name: Build & Push
+        id: build
         run: |
-          IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
-          docker build -t $IMAGE_URI apps/
-          docker push $IMAGE_URI
-          echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+          IMAGE=${{ steps.login.outputs.registry }}/${{ env.PROJECT_NAME }}-staging:${{ github.sha }}
+          docker build -t $IMAGE apps/
+          docker push $IMAGE
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
 
-  # --- JOB 6: Deploy to Staging ---------------------------------------------
+# -------------------- JOB 7: DEPLOY STAGING --------------------
   deploy-staging:
-    name: Deploy to Staging
+    name: Deploy Staging
     runs-on: ubuntu-latest
     needs: push
     environment: staging
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -188,104 +204,46 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.0
 
-      - name: Terraform Init - staging
+      - name: Terraform Init
         working-directory: terraform/envs/staging
         run: terraform init
 
-      - name: Save previous task definition
-        id: prev-task-def
-        run: |
-          PREV=$(aws ecs describe-services \
-            --cluster ${{ env.PROJECT_NAME }}-staging-cluster \
-            --services ${{ env.PROJECT_NAME }}-staging-service \
-            --query 'services[0].taskDefinition' \
-            --output text 2>/dev/null || echo "NONE")
-          echo "prev_task_def=$PREV" >> $GITHUB_OUTPUT
-          echo "Previous task definition: $PREV"
-
-      - name: Terraform Apply - staging
+      - name: Terraform Plan
         working-directory: terraform/envs/staging
         run: |
-          terraform apply -auto-approve \
-            -var="container_image=${{ needs.push.outputs.image_uri }}"
+          terraform plan \
+          -lock-timeout=300s \
+          -var="container_image=${{ needs.push.outputs.image_uri }}" \
+          -out=tfplan
 
-      - name: Health check - staging
-        id: health-check
-        run: |
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --names ${{ env.PROJECT_NAME }}-staging-alb \
-            --query 'LoadBalancers[0].DNSName' \
-            --output text)
-          echo "Waiting for ECS service to stabilize..."
-          aws ecs wait services-stable \
-            --cluster ${{ env.PROJECT_NAME }}-staging-cluster \
-            --services ${{ env.PROJECT_NAME }}-staging-service \
-            --region ${{ env.AWS_REGION }}
-          echo "Running health check on $ALB_DNS"
-          for i in {1..10}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB_DNS/health)
-            if [ "$STATUS" = "200" ]; then
-              echo "Health check passed"
-              exit 0
-            fi
-            echo "Attempt $i failed with status $STATUS, retrying in 30s..."
-            sleep 30
-          done
-          echo "Health check failed after 5 minutes"
-          exit 1
+      - name: Terraform Apply
+        working-directory: terraform/envs/staging
+        run: terraform apply -auto-approve tfplan
 
-      - name: Rollback staging on failure
-        if: failure() && steps.health-check.outcome == 'failure' && steps.prev-task-def.outputs.prev_task_def != 'NONE'
-        run: |
-          echo "Rolling back to ${{ steps.prev-task-def.outputs.prev_task_def }}"
-          aws ecs update-service \
-            --cluster ${{ env.PROJECT_NAME }}-staging-cluster \
-            --service ${{ env.PROJECT_NAME }}-staging-service \
-            --task-definition ${{ steps.prev-task-def.outputs.prev_task_def }}
-          aws ecs wait services-stable \
-            --cluster ${{ env.PROJECT_NAME }}-staging-cluster \
-            --services ${{ env.PROJECT_NAME }}-staging-service
-          echo "Rollback complete"
-
-      - name: Notify Slack - staging success
-        if: success()
-        run: |
-          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
-            -H "Content-type: application/json" \
-            -d "{\"text\": \"SUCCESS - ${{ env.PROJECT_NAME }} deployed to staging. Commit: ${{ github.sha }}. By: ${{ github.actor }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-
-      - name: Notify Slack - staging failure
-        if: failure()
-        run: |
-          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
-            -H "Content-type: application/json" \
-            -d "{\"text\": \"FAILED - ${{ env.PROJECT_NAME }} deployment to staging FAILED and rolled back. Commit: ${{ github.sha }}. By: ${{ github.actor }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-
-  # --- JOB 7: Manual Approval -----------------------------------------------
+# -------------------- JOB 8: APPROVAL --------------------
   approval:
-    name: Manual Approval for Production
+    name: Manual Approval
     runs-on: ubuntu-latest
     needs: deploy-staging
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     environment: production
-    steps:
-      - name: Awaiting approval
-        run: echo "Approved for production deployment"
 
-  # --- JOB 8: Deploy to Production ------------------------------------------
+    steps:
+      - run: echo "Approved"
+
+# -------------------- JOB 9: DEPLOY PROD --------------------
   deploy-prod:
-    name: Deploy to Production
+    name: Deploy Production
     runs-on: ubuntu-latest
     needs: [push, approval]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     environment: production
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -294,78 +252,394 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.0
 
-      - name: Terraform Init - prod
+      - name: Terraform Init
         working-directory: terraform/envs/prod
         run: terraform init
 
-      - name: Save previous task definition
-        id: prev-task-def
-        run: |
-          PREV=$(aws ecs describe-services \
-            --cluster ${{ env.PROJECT_NAME }}-prod-cluster \
-            --services ${{ env.PROJECT_NAME }}-prod-service \
-            --query 'services[0].taskDefinition' \
-            --output text 2>/dev/null || echo "NONE")
-          echo "prev_task_def=$PREV" >> $GITHUB_OUTPUT
-          echo "Previous task definition: $PREV"
-
-      - name: Terraform Apply - prod
+      - name: Terraform Plan
         working-directory: terraform/envs/prod
         run: |
-          terraform apply -auto-approve \
-            -var="container_image=${{ needs.push.outputs.image_uri }}"
+          terraform plan \
+          -lock-timeout=300s \
+          -var="container_image=${{ needs.push.outputs.image_uri }}" \
+          -out=tfplan
 
-      - name: Health check - prod
-        id: health-check
-        run: |
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --names ${{ env.PROJECT_NAME }}-prod-alb \
-            --query 'LoadBalancers[0].DNSName' \
-            --output text)
-          echo "Waiting for ECS service to stabilize..."
-          aws ecs wait services-stable \
-            --cluster ${{ env.PROJECT_NAME }}-prod-cluster \
-            --services ${{ env.PROJECT_NAME }}-prod-service \
-            --region ${{ env.AWS_REGION }}
-          echo "Running health check on $ALB_DNS"
-          for i in {1..10}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB_DNS/health)
-            if [ "$STATUS" = "200" ]; then
-              echo "Health check passed"
-              exit 0
-            fi
-            echo "Attempt $i failed with status $STATUS, retrying in 30s..."
-            sleep 30
-          done
-          echo "Health check failed after 5 minutes"
-          exit 1
+      - name: Terraform Apply
+        working-directory: terraform/envs/prod
+        run: terraform apply -auto-approve tfplan
 
-      - name: Rollback prod on failure
-        if: failure() && steps.health-check.outcome == 'failure' && steps.prev-task-def.outputs.prev_task_def != 'NONE'
-        run: |
-          echo "Rolling back to ${{ steps.prev-task-def.outputs.prev_task_def }}"
-          aws ecs update-service \
-            --cluster ${{ env.PROJECT_NAME }}-prod-cluster \
-            --service ${{ env.PROJECT_NAME }}-prod-service \
-            --task-definition ${{ steps.prev-task-def.outputs.prev_task_def }}
-          aws ecs wait services-stable \
-            --cluster ${{ env.PROJECT_NAME }}-prod-cluster \
-            --services ${{ env.PROJECT_NAME }}-prod-service
-          echo "Rollback complete"
 
-      - name: Notify Slack - prod success
-        if: success()
-        run: |
-          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
-            -H "Content-type: application/json" \
-            -d "{\"text\": \"SUCCESS - ${{ env.PROJECT_NAME }} deployed to production. Commit: ${{ github.sha }}. By: ${{ github.actor }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
-      - name: Notify Slack - prod failure
-        if: failure()
-        run: |
-          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
-            -H "Content-type: application/json" \
-            -d "{\"text\": \"FAILED - ${{ env.PROJECT_NAME }} deployment to production FAILED and rolled back. Commit: ${{ github.sha }}. By: ${{ github.actor }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+# name: CI/CD Pipeline
+
+# on:
+#   pull_request:
+#     branches: [main]
+#   push:
+#     branches: [main]
+
+# env:
+#   AWS_REGION: ap-south-1
+#   PROJECT_NAME: infra-pipeline
+#   APP_PORT: 3000
+
+# jobs:
+#   # --- JOB 1: Lint + tfsec ---------------------------------------------------
+#   lint:
+#     name: Lint and Security Scan
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Setup Terraform
+#         uses: hashicorp/setup-terraform@v3
+#         with:
+#           terraform_version: 1.9.0
+
+#       - name: Terraform Validate - dev
+#         working-directory: terraform/envs/dev
+#         run: |
+#           terraform init -backend=false
+#           terraform validate
+
+#       - name: Terraform Validate - staging
+#         working-directory: terraform/envs/staging
+#         run: |
+#           terraform init -backend=false
+#           terraform validate
+
+#       - name: Terraform Validate - prod
+#         working-directory: terraform/envs/prod
+#         run: |
+#           terraform init -backend=false
+#           terraform validate
+
+#       - name: Install tflint
+#         run: |
+#           curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+
+#       - name: Run tflint - networking
+#         working-directory: terraform/modules/networking
+#         run: tflint --init && tflint --config=.tflint.hcl
+
+#       - name: Run tflint - compute
+#         working-directory: terraform/modules/compute
+#         run: tflint --config=.tflint.hcl
+
+#       - name: Run tflint - security
+#         working-directory: terraform/modules/security
+#         run: tflint --config=.tflint.hcl
+
+#       - name: Run tflint - monitoring
+#         working-directory: terraform/modules/monitoring
+#         run: tflint --config=.tflint.hcl
+
+#       - name: Run tfsec - Terraform security scan
+#         uses: aquasecurity/tfsec-action@v1.0.0
+#         with:
+#           working_directory: terraform
+#           soft_fail: true
+
+#   # --- JOB 2: Infracost ------------------------------------------------------
+#   infracost:
+#     name: Cost Estimation
+#     runs-on: ubuntu-latest
+#     needs: lint
+#     continue-on-error: true
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Setup Infracost
+#         uses: infracost/actions/setup@v3
+#         with:
+#           api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+#       - name: Infracost estimate - staging
+#         run: |
+#           infracost breakdown \
+#             --path terraform/envs/staging \
+#             --terraform-var-file terraform.tfvars \
+#             --format table
+
+#       - name: Infracost estimate - prod
+#         run: |
+#           infracost breakdown \
+#             --path terraform/envs/prod \
+#             --terraform-var-file terraform.tfvars \
+#             --format table
+
+#   # --- JOB 3: Docker Build ---------------------------------------------------
+#   build:
+#     name: Docker Build and Test
+#     runs-on: ubuntu-latest
+#     needs: lint
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Build Docker image
+#         working-directory: apps
+#         run: docker build -t ${{ env.PROJECT_NAME }}:${{ github.sha }} .
+
+#       - name: Test health endpoint
+#         run: |
+#           docker run -d -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \
+#             --name test-app \
+#             ${{ env.PROJECT_NAME }}:${{ github.sha }}
+#           sleep 5
+#           curl -f http://localhost:${{ env.APP_PORT }}/health
+#           docker stop test-app
+
+#   # --- JOB 4: Trivy Docker Security Scan ------------------------------------
+#   trivy-scan:
+#     name: Trivy Docker Security Scan
+#     runs-on: ubuntu-latest
+#     needs: build
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Build image for scanning
+#         working-directory: apps
+#         run: docker build -t ${{ env.PROJECT_NAME }}:${{ github.sha }} .
+
+#       - name: Run Trivy vulnerability scanner
+#         uses: aquasecurity/trivy-action@master
+#         with:
+#           image-ref: ${{ env.PROJECT_NAME }}:${{ github.sha }}
+#           format: table
+#           exit-code: 1
+#           severity: CRITICAL,HIGH
+#           skip-dirs: /usr/local/lib/node_modules/npm
+
+#   # --- JOB 5: Push to ECR ---------------------------------------------------
+#   push:
+#     name: Push to ECR
+#     runs-on: ubuntu-latest
+#     needs: trivy-scan
+#     outputs:
+#       image_uri: ${{ steps.build-push.outputs.image_uri }}
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       - name: Login to ECR
+#         id: login-ecr
+#         uses: aws-actions/amazon-ecr-login@v2
+
+#       - name: Build and push to ECR
+#         id: build-push
+#         env:
+#           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+#           ECR_REPOSITORY: ${{ env.PROJECT_NAME }}-staging
+#         run: |
+#           IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
+#           docker build -t $IMAGE_URI apps/
+#           docker push $IMAGE_URI
+#           echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+#   # --- JOB 6: Deploy to Staging ---------------------------------------------
+#   deploy-staging:
+#     name: Deploy to Staging
+#     runs-on: ubuntu-latest
+#     needs: push
+#     environment: staging
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       - name: Setup Terraform
+#         uses: hashicorp/setup-terraform@v3
+#         with:
+#           terraform_version: 1.9.0
+
+#       - name: Terraform Init - staging
+#         working-directory: terraform/envs/staging
+#         run: terraform init
+
+#       - name: Save previous task definition
+#         id: prev-task-def
+#         run: |
+#           PREV=$(aws ecs describe-services \
+#             --cluster ${{ env.PROJECT_NAME }}-staging-cluster \
+#             --services ${{ env.PROJECT_NAME }}-staging-service \
+#             --query 'services[0].taskDefinition' \
+#             --output text 2>/dev/null || echo "NONE")
+#           echo "prev_task_def=$PREV" >> $GITHUB_OUTPUT
+#           echo "Previous task definition: $PREV"
+
+#       - name: Terraform Apply - staging
+#         working-directory: terraform/envs/staging
+#         run: |
+#           terraform apply -auto-approve \
+#             -var="container_image=${{ needs.push.outputs.image_uri }}"
+
+#       - name: Health check - staging
+#         id: health-check
+#         run: |
+#           ALB_DNS=$(aws elbv2 describe-load-balancers \
+#             --names ${{ env.PROJECT_NAME }}-staging-alb \
+#             --query 'LoadBalancers[0].DNSName' \
+#             --output text)
+#           echo "Waiting for ECS service to stabilize..."
+#           aws ecs wait services-stable \
+#             --cluster ${{ env.PROJECT_NAME }}-staging-cluster \
+#             --services ${{ env.PROJECT_NAME }}-staging-service \
+#             --region ${{ env.AWS_REGION }}
+#           echo "Running health check on $ALB_DNS"
+#           for i in {1..10}; do
+#             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB_DNS/health)
+#             if [ "$STATUS" = "200" ]; then
+#               echo "Health check passed"
+#               exit 0
+#             fi
+#             echo "Attempt $i failed with status $STATUS, retrying in 30s..."
+#             sleep 30
+#           done
+#           echo "Health check failed after 5 minutes"
+#           exit 1
+
+#       - name: Rollback staging on failure
+#         if: failure() && steps.health-check.outcome == 'failure' && steps.prev-task-def.outputs.prev_task_def != 'NONE'
+#         run: |
+#           echo "Rolling back to ${{ steps.prev-task-def.outputs.prev_task_def }}"
+#           aws ecs update-service \
+#             --cluster ${{ env.PROJECT_NAME }}-staging-cluster \
+#             --service ${{ env.PROJECT_NAME }}-staging-service \
+#             --task-definition ${{ steps.prev-task-def.outputs.prev_task_def }}
+#           aws ecs wait services-stable \
+#             --cluster ${{ env.PROJECT_NAME }}-staging-cluster \
+#             --services ${{ env.PROJECT_NAME }}-staging-service
+#           echo "Rollback complete"
+
+#       - name: Notify Slack - staging success
+#         if: success()
+#         run: |
+#           curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+#             -H "Content-type: application/json" \
+#             -d "{\"text\": \"SUCCESS - ${{ env.PROJECT_NAME }} deployed to staging. Commit: ${{ github.sha }}. By: ${{ github.actor }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+#       - name: Notify Slack - staging failure
+#         if: failure()
+#         run: |
+#           curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+#             -H "Content-type: application/json" \
+#             -d "{\"text\": \"FAILED - ${{ env.PROJECT_NAME }} deployment to staging FAILED and rolled back. Commit: ${{ github.sha }}. By: ${{ github.actor }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+#   # --- JOB 7: Manual Approval -----------------------------------------------
+#   approval:
+#     name: Manual Approval for Production
+#     runs-on: ubuntu-latest
+#     needs: deploy-staging
+#     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#     environment: production
+#     steps:
+#       - name: Awaiting approval
+#         run: echo "Approved for production deployment"
+
+#   # --- JOB 8: Deploy to Production ------------------------------------------
+#   deploy-prod:
+#     name: Deploy to Production
+#     runs-on: ubuntu-latest
+#     needs: [push, approval]
+#     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#     environment: production
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       - name: Setup Terraform
+#         uses: hashicorp/setup-terraform@v3
+#         with:
+#           terraform_version: 1.9.0
+
+#       - name: Terraform Init - prod
+#         working-directory: terraform/envs/prod
+#         run: terraform init
+
+#       - name: Save previous task definition
+#         id: prev-task-def
+#         run: |
+#           PREV=$(aws ecs describe-services \
+#             --cluster ${{ env.PROJECT_NAME }}-prod-cluster \
+#             --services ${{ env.PROJECT_NAME }}-prod-service \
+#             --query 'services[0].taskDefinition' \
+#             --output text 2>/dev/null || echo "NONE")
+#           echo "prev_task_def=$PREV" >> $GITHUB_OUTPUT
+#           echo "Previous task definition: $PREV"
+
+#       - name: Terraform Apply - prod
+#         working-directory: terraform/envs/prod
+#         run: |
+#           terraform apply -auto-approve \
+#             -var="container_image=${{ needs.push.outputs.image_uri }}"
+
+#       - name: Health check - prod
+#         id: health-check
+#         run: |
+#           ALB_DNS=$(aws elbv2 describe-load-balancers \
+#             --names ${{ env.PROJECT_NAME }}-prod-alb \
+#             --query 'LoadBalancers[0].DNSName' \
+#             --output text)
+#           echo "Waiting for ECS service to stabilize..."
+#           aws ecs wait services-stable \
+#             --cluster ${{ env.PROJECT_NAME }}-prod-cluster \
+#             --services ${{ env.PROJECT_NAME }}-prod-service \
+#             --region ${{ env.AWS_REGION }}
+#           echo "Running health check on $ALB_DNS"
+#           for i in {1..10}; do
+#             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB_DNS/health)
+#             if [ "$STATUS" = "200" ]; then
+#               echo "Health check passed"
+#               exit 0
+#             fi
+#             echo "Attempt $i failed with status $STATUS, retrying in 30s..."
+#             sleep 30
+#           done
+#           echo "Health check failed after 5 minutes"
+#           exit 1
+
+#       - name: Rollback prod on failure
+#         if: failure() && steps.health-check.outcome == 'failure' && steps.prev-task-def.outputs.prev_task_def != 'NONE'
+#         run: |
+#           echo "Rolling back to ${{ steps.prev-task-def.outputs.prev_task_def }}"
+#           aws ecs update-service \
+#             --cluster ${{ env.PROJECT_NAME }}-prod-cluster \
+#             --service ${{ env.PROJECT_NAME }}-prod-service \
+#             --task-definition ${{ steps.prev-task-def.outputs.prev_task_def }}
+#           aws ecs wait services-stable \
+#             --cluster ${{ env.PROJECT_NAME }}-prod-cluster \
+#             --services ${{ env.PROJECT_NAME }}-prod-service
+#           echo "Rollback complete"
+
+#       - name: Notify Slack - prod success
+#         if: success()
+#         run: |
+#           curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+#             -H "Content-type: application/json" \
+#             -d "{\"text\": \"SUCCESS - ${{ env.PROJECT_NAME }} deployed to production. Commit: ${{ github.sha }}. By: ${{ github.actor }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+#       - name: Notify Slack - prod failure
+#         if: failure()
+#         run: |
+#           curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+#             -H "Content-type: application/json" \
+#             -d "{\"text\": \"FAILED - ${{ env.PROJECT_NAME }} deployment to production FAILED and rolled back. Commit: ${{ github.sha }}. By: ${{ github.actor }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
