@@ -307,7 +307,7 @@ jobs:
             exit 1
           fi
 #------------------Rollback--------
-rollback:
+  rollback:
     name: Rollback if Failed
     runs-on: ubuntu-latest
     needs: deploy-prod
