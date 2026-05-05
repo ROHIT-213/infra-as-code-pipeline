@@ -331,47 +331,17 @@ jobs:
         working-directory: terraform/envs/prod
         run: terraform apply -auto-approve tfplan
       
-      - name: Health Check (Strict)
+      - name: Health Check (5 min)
         run: |
-          echo "Waiting for ECS to stabilize..."
-          sleep 180
-
-          ALB=$(aws elbv2 describe-load-balancers \
+          sleep 300
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
             --names infra-pipeline-prod-alb \
             --query 'LoadBalancers[0].DNSName' \
-            --output text)
-
-          echo "ALB DNS: $ALB"
-
-          FAIL=0
-
-          for i in {1..12}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB/health)
-            echo "Attempt $i → Status: $STATUS"
-
-            if [ "$STATUS" != "200" ]; then
-              FAIL=1
-              break
-            fi
-
-            sleep 10
-          done
-
-          if [ "$FAIL" -eq 1 ]; then
-            echo "Health check failed"
+            --output text)/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed!"
             exit 1
           fi
-      # - name: Health Check (5 min)
-      #   run: |
-      #     sleep 300
-      #     STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
-      #       --names infra-pipeline-prod-alb \
-      #       --query 'LoadBalancers[0].DNSName' \
-      #       --output text)/health)
-      #     if [ "$STATUS" != "200" ]; then
-      #       echo "Health check failed!"
-      #       exit 1
-      #     fi
 #------------------Rollback--------
   rollback:
     name: Rollback if Failed
@@ -386,22 +356,6 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
-
-
-
-      - name: Get Previous ACTIVE Task Definition
-        id: prev
-        run: |
-          TASK=$(aws ecs list-task-definitions \
-            --family-prefix infra-pipeline-prod \
-            --status ACTIVE \
-            --sort DESC \
-            --query "taskDefinitionArns[1]" \
-            --output text)
-
-           echo "task=$TASK" >> $GITHUB_OUTPUT
-
-
 
       - name: Rollback ECS
         run: |

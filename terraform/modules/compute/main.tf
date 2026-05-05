@@ -75,9 +75,9 @@ resource "aws_ecs_task_definition" "app" {
   memory                   = var.task_memory          //comes from terraform.tfvars different per environment
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   
-  lifecycle {                                         //line added
-    ignore_changes = [container_definitions]
-  }
+  # lifecycle {                                         //line added
+  #   ignore_changes = [container_definitions]
+  # }
 
   container_definitions = jsonencode([{
     name  = "${var.project_name}-${var.environment}"
