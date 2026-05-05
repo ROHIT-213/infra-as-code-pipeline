@@ -300,7 +300,7 @@ jobs:
            echo "task=$TASK" >> $GITHUB_OUTPUT
   
 
-  
+
       - name: Get Current Task Definition
         id: current_task
         run: |
@@ -345,7 +345,7 @@ jobs:
 
           FAIL=0
 
-          for i in {1..10}; do
+          for i in {1..12}; do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB/health)
             echo "Attempt $i → Status: $STATUS"
 
@@ -363,7 +363,7 @@ jobs:
           fi
       # - name: Health Check (5 min)
       #   run: |
-      #     sleep 120
+      #     sleep 300
       #     STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
       #       --names infra-pipeline-prod-alb \
       #       --query 'LoadBalancers[0].DNSName' \
@@ -386,6 +386,22 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
+
+
+
+      - name: Get Previous ACTIVE Task Definition
+        id: prev
+        run: |
+          TASK=$(aws ecs list-task-definitions \
+            --family-prefix infra-pipeline-prod \
+            --status ACTIVE \
+            --sort DESC \
+            --query "taskDefinitionArns[1]" \
+            --output text)
+
+           echo "task=$TASK" >> $GITHUB_OUTPUT
+
+
 
       - name: Rollback ECS
         run: |
