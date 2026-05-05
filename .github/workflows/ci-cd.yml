@@ -284,7 +284,23 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+    
       
+      - name: Get Previous ACTIVE Task Definition           
+        id: prev
+        run: |
+          TASK=$(aws ecs list-task-definitions \
+            --family-prefix infra-pipeline-prod \
+            --status ACTIVE \
+            --sort DESC \
+            --query "taskDefinitionArns[1]" \
+            --output text)
+
+           echo "task=$TASK" >> $GITHUB_OUTPUT
+  
+
+  
       - name: Get Current Task Definition
         id: current_task
         run: |
