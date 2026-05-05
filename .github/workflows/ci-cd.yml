@@ -315,17 +315,47 @@ jobs:
         working-directory: terraform/envs/prod
         run: terraform apply -auto-approve tfplan
       
-      - name: Health Check (5 min)
+      - name: Health Check (Strict)
         run: |
-          sleep 120
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
+          echo "Waiting for ECS to stabilize..."
+          sleep 180
+
+          ALB=$(aws elbv2 describe-load-balancers \
             --names infra-pipeline-prod-alb \
             --query 'LoadBalancers[0].DNSName' \
-            --output text)/health)
-          if [ "$STATUS" != "200" ]; then
-            echo "Health check failed!"
+            --output text)
+
+          echo "ALB DNS: $ALB"
+
+          FAIL=0
+
+          for i in {1..10}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB/health)
+            echo "Attempt $i → Status: $STATUS"
+
+            if [ "$STATUS" != "200" ]; then
+              FAIL=1
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ "$FAIL" -eq 1 ]; then
+            echo "Health check failed"
             exit 1
           fi
+      # - name: Health Check (5 min)
+      #   run: |
+      #     sleep 120
+      #     STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
+      #       --names infra-pipeline-prod-alb \
+      #       --query 'LoadBalancers[0].DNSName' \
+      #       --output text)/health)
+      #     if [ "$STATUS" != "200" ]; then
+      #       echo "Health check failed!"
+      #       exit 1
+      #     fi
 #------------------Rollback--------
   rollback:
     name: Rollback if Failed
