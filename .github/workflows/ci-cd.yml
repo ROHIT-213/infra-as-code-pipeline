@@ -317,7 +317,7 @@ jobs:
       
       - name: Health Check (5 min)
         run: |
-          sleep 10
+          sleep 120
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
             --names infra-pipeline-prod-alb \
             --query 'LoadBalancers[0].DNSName' \
