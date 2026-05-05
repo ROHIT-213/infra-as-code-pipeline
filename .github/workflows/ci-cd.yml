@@ -269,6 +269,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: production
 
+    outputs:
+      prev_task: ${{ steps.current_task.outputs.task_def }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -278,6 +281,17 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Get Current Task Definition
+        id: current_task
+        run: |
+          TASK=$(aws ecs describe-services \
+            --cluster infra-pipeline-prod-cluster \
+            --services infra-pipeline-prod-service \
+            --query "services[0].taskDefinition" \
+            --output text)
+
+          echo "task_def=$TASK" >> $GITHUB_OUTPUT
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
