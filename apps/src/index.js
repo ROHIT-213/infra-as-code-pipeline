@@ -16,7 +16,7 @@ const server = http.createServer((req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>ERO Touch Deployment</title>
+      <title>Zero Touch Deployment</title>
       <style>
         body {
           margin: 0;
@@ -57,7 +57,7 @@ const server = http.createServer((req, res) => {
     </head>
     <body>
       <div class="container">
-        <h1> Welcome to ZERO Touch Deployment</h1>
+        <h1> Welcome to Zero Touch Deployment</h1>
         <p>Your application has been successfully deployed using CI/CD</p>
         <div class="badge">infra-pipeline app is running!</div>
       </div>
