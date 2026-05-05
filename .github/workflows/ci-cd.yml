@@ -270,6 +270,9 @@ jobs:
     environment: production
 
     outputs:
+      # prev_task: ${{ steps.current_task.outputs.task_def }}
+      task_def: ${{ steps.terraform.outputs.task_def }}
+      image_uri: ${{ needs.push.outputs.image_uri }}
       prev_task: ${{ steps.current_task.outputs.task_def }}
 
     steps:
@@ -312,14 +315,17 @@ jobs:
         working-directory: terraform/envs/prod
         run: terraform apply -auto-approve tfplan
       
-      # - name: Health Check (5 min)
-      #   run: |
-      #     sleep 300
-      #     STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$prod_alb_url/health)
-      #     if [ "$STATUS" != "200" ]; then
-      #       echo "Health check failed!"
-      #       exit 1
-      #     fi
+      - name: Health Check (5 min)
+        run: |
+          sleep 300
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
+            --names infra-pipeline-prod-alb \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed!"
+            exit 1
+          fi
 #------------------Rollback--------
   rollback:
     name: Rollback if Failed
