@@ -277,11 +277,11 @@ jobs:
             --output text)
           echo "$TASK_ARN" > rollback_arn.txt
 
-      - name: Upload ARN Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ecs-rollback-info
-          path: rollback_arn.txt
+    - name: Upload ARN Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ecs-rollback-info
+        path: rollback_arn.txt
     outputs:
       # prev_task: ${{ steps.current_task.outputs.task_def }}
       # task_def: ${{ steps.terraform.outputs.task_def }}
@@ -389,7 +389,7 @@ jobs:
             --task-definition $PREV_ARN \
             --force-new-deployment
 
-            
+
       # - name: Rollback ECS
       #   run: |
       #     echo "Deploy failed. Rolling back to: ${{ needs.deploy-prod.outputs.prev_task }}"
