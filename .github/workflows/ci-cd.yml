@@ -285,7 +285,24 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-    
+      - name: 1. Capture Pre-Deploy ARN
+        id: pre_deploy
+        run: |
+          # This command specifically asks for the Task Definition currently assigned to the service
+          TASK_ARN=$(aws ecs describe-services \
+            --cluster infra-pipeline-prod-cluster \
+            --services infra-pipeline-prod-service \
+            --query "services[0].taskDefinition" \
+            --output text)
+          
+          # Crucial: Check if the captured ARN is actually active before saving it
+          STATUS=$(aws ecs describe-task-definition --task-definition $TASK_ARN --query "taskDefinition.status" --output text)
+          
+          if [ "$STATUS" != "ACTIVE" ]; then
+            echo "Warning: Current Task Def is $STATUS. Rollback might fail."
+          fi
+
+          echo "SAVED_TASK_ARN=$TASK_ARN" >> $GITHUB_ENV
       
       # - name: Get Previous ACTIVE Task Definition           
       #   id: prev
