@@ -354,18 +354,6 @@ jobs:
       # image_uri: ${{ needs.push.outputs.image_uri }}
       prev_task: ${{ steps.current_task.outputs.task_def }}
       
-    name: Get Current Task Definition
-    id: current_task
-    run: |
-      TASK=$(aws ecs describe-services \
-        --cluster infra-pipeline-prod-cluster \
-        --services infra-pipeline-prod-service \
-        --query "services[0].taskDefinition" \
-        --output text)
-
-      echo "task_def=$TASK" >> $GITHUB_OUTPUT
-
-    
 
     if: always() && needs.deploy-prod.result == 'failure'
 
