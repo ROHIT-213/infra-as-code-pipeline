@@ -105,7 +105,7 @@ jobs:
             ${{ env.PROJECT_NAME }}:${{ github.sha }}
 
           sleep 5
-          # curl -f http://localhost:${{ env.APP_PORT }}/health
+          curl -f http://localhost:${{ env.APP_PORT }}/health
           docker stop test-app
 
 # -------------------- JOB 4: SECURITY SCAN --------------------
@@ -261,13 +261,19 @@ jobs:
     steps:
       - run: echo "Approved"
 
-# -------------------- JOB 10: DEPLOY PROD (WITH AUTO-ROLLBACK) --------------------
+# -------------------- JOB 10: DEPLOY PROD --------------------
   deploy-prod:
     name: Deploy Production
     runs-on: ubuntu-latest
     needs: [push, approval]
     if: github.ref == 'refs/heads/main'
     environment: production
+
+    outputs:
+      # prev_task: ${{ steps.current_task.outputs.task_def }}
+      task_def: ${{ steps.terraform.outputs.task_def }}
+      # image_uri: ${{ needs.push.outputs.image_uri }}
+      prev_task: ${{ steps.current_task.outputs.task_def }}
 
     steps:
       - uses: actions/checkout@v4
@@ -279,166 +285,89 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: 1. Capture Current State (Pre-Deploy)
-        id: pre_deploy
+    
+      
+      # - name: Get Previous ACTIVE Task Definition           
+      #   id: prev
+      #   run: |
+      #     TASK=$(aws ecs list-task-definitions \
+      #       --family-prefix infra-pipeline-prod \
+      #       --status ACTIVE \
+      #       --sort DESC \
+      #       --query "taskDefinitionArns[1]" \
+      #       --output text)
+
+      #      echo "task=$TASK" >> $GITHUB_OUTPUT
+  
+
+
+      - name: Get Current Task Definition
+        id: current_task
         run: |
-          # We grab the working ARN before Terraform touches anything
-          TASK_ARN=$(aws ecs describe-services \
+          TASK=$(aws ecs describe-services \
             --cluster infra-pipeline-prod-cluster \
             --services infra-pipeline-prod-service \
             --query "services[0].taskDefinition" \
             --output text)
-          
-          # Save it to the environment so it's available even if later steps fail
-          echo "SAVED_TASK_ARN=$TASK_ARN" >> $GITHUB_ENV
-          echo "Successfully captured working ARN: $TASK_ARN"
 
-      - name: 2. Setup & Apply Terraform
+          echo "task_def=$TASK" >> $GITHUB_OUTPUT
+
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: terraform/envs/prod
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: terraform/envs/prod
+        run: |
+          terraform plan \
+          -lock-timeout=300s \
+          -var="container_image=${{ needs.push.outputs.image_uri }}" \
+          -out=tfplan
 
       - name: Terraform Apply
         working-directory: terraform/envs/prod
+        run: terraform apply -auto-approve tfplan
+      
+      - name: Health Check (5 min)
         run: |
-          terraform init
-          terraform apply -auto-approve -var="container_image=${{ needs.push.outputs.image_uri }}"
-
-      - name: 3. Post-Deployment Health Check (5 min)
-        run: |
-          echo "Waiting 5 minutes for service to stabilize..."
           sleep 300
-          
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
             --names infra-pipeline-prod-alb \
             --query 'LoadBalancers[0].DNSName' \
-            --output text)
-          
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB_DNS/health)
-          
+            --output text)/health)
           if [ "$STATUS" != "200" ]; then
-            echo "Health check failed with status: $STATUS. Triggering rollback..."
+            echo "Health check failed!"
             exit 1
           fi
-          echo "Health check passed! Deployment successful."
+#------------------Rollback--------
+  rollback:
+    name: Rollback if Failed
+    runs-on: ubuntu-latest
+    needs: deploy-prod
+    # if: failure()
 
-      - name: 4. AUTOMATED ROLLBACK (Only on Failure)
-        if: failure() # This ensures the step runs ONLY if Terraform or Health Check fails
+
+    if: always() && needs.deploy-prod.result == 'failure'
+
+    steps:
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Rollback ECS
         run: |
-          echo "CRITICAL: Deployment failed. Reverting service to: ${{ env.SAVED_TASK_ARN }}"
-          
+          echo "Deploy failed. Rolling back to: ${{ needs.deploy-prod.outputs.prev_task }}"
           aws ecs update-service \
             --cluster infra-pipeline-prod-cluster \
             --service infra-pipeline-prod-service \
-            --task-definition ${{ env.SAVED_TASK_ARN }} \
+            --task-definition ${{ needs.deploy-prod.outputs.prev_task }} \
             --force-new-deployment
-          
-          echo "Rollback initiated. Check ECS Console for stabilization."
-# # -------------------- JOB 10: DEPLOY PROD --------------------
-#   deploy-prod:
-#     name: Deploy Production
-#     runs-on: ubuntu-latest
-#     needs: [push, approval]
-#     if: github.ref == 'refs/heads/main'
-#     environment: production
-
-#     outputs:
-#       # prev_task: ${{ steps.current_task.outputs.task_def }}
-#       # task_def: ${{ steps.terraform.outputs.task_def }}
-#       # image_uri: ${{ needs.push.outputs.image_uri }}
-#       prev_task: ${{ steps.current_task.outputs.task_def }}
-
-#     steps:
-#       - uses: actions/checkout@v4
-
-#       - name: Configure AWS
-#         uses: aws-actions/configure-aws-credentials@v4
-#         with:
-#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-#           aws-region: ${{ env.AWS_REGION }}
-
-    
-      
-#       # - name: Get Previous ACTIVE Task Definition           
-#       #   id: prev
-#       #   run: |
-#       #     TASK=$(aws ecs list-task-definitions \
-#       #       --family-prefix infra-pipeline-prod \
-#       #       --status ACTIVE \
-#       #       --sort DESC \
-#       #       --query "taskDefinitionArns[1]" \
-#       #       --output text)
-
-#       #      echo "task=$TASK" >> $GITHUB_OUTPUT
-  
-
-
-#       - name: Get Current Task Definition
-#         id: current_task
-#         run: |
-#           TASK=$(aws ecs describe-services \
-#             --cluster infra-pipeline-prod-cluster \
-#             --services infra-pipeline-prod-service \
-#             --query "services[0].taskDefinition" \
-#             --output text)
-
-#           echo "task_def=$TASK" >> $GITHUB_OUTPUT
-
-#       - name: Setup Terraform
-#         uses: hashicorp/setup-terraform@v3
-
-#       - name: Terraform Init
-#         working-directory: terraform/envs/prod
-#         run: terraform init
-
-#       - name: Terraform Plan
-#         working-directory: terraform/envs/prod
-#         run: |
-#           terraform plan \
-#           -lock-timeout=300s \
-#           -var="container_image=${{ needs.push.outputs.image_uri }}" \
-#           -out=tfplan
-
-#       - name: Terraform Apply
-#         working-directory: terraform/envs/prod
-#         run: terraform apply -auto-approve tfplan
-      
-#       - name: Health Check (5 min)
-#         run: |
-#           sleep 300
-#           STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
-#             --names infra-pipeline-prod-alb \
-#             --query 'LoadBalancers[0].DNSName' \
-#             --output text)/health)
-#           if [ "$STATUS" != "200" ]; then
-#             echo "Health check failed!"
-#             exit 1
-#           fi
-# #------------------Rollback--------
-#   rollback:
-#     name: Rollback if Failed
-#     runs-on: ubuntu-latest
-#     needs: deploy-prod
-#     # if: failure()
-
-
-#     if: always() && needs.deploy-prod.result == 'failure'
-
-#     steps:
-#       - name: Configure AWS
-#         uses: aws-actions/configure-aws-credentials@v4
-#         with:
-#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-#           aws-region: ap-south-1
-
-#       - name: Rollback ECS
-#         run: |
-#           echo "Deploy failed. Rolling back to: ${{ needs.deploy-prod.outputs.prev_task }}"
-#           aws ecs update-service \
-#             --cluster infra-pipeline-prod-cluster \
-#             --service infra-pipeline-prod-service \
-#             --task-definition ${{ needs.deploy-prod.outputs.prev_task }} \
-#             --force-new-deployment
 
 
 
