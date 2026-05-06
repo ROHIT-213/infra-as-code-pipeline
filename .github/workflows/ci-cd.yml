@@ -268,7 +268,20 @@ jobs:
     needs: [push, approval]
     if: github.ref == 'refs/heads/main'
     environment: production
+    - name: Save ARN for Rollback
+        run: |
+          TASK_ARN=$(aws ecs describe-services \
+            --cluster infra-pipeline-prod-cluster \
+            --services infra-pipeline-prod-service \
+            --query "services[0].taskDefinition" \
+            --output text)
+          echo "$TASK_ARN" > rollback_arn.txt
 
+      - name: Upload ARN Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecs-rollback-info
+          path: rollback_arn.txt
     outputs:
       # prev_task: ${{ steps.current_task.outputs.task_def }}
       # task_def: ${{ steps.terraform.outputs.task_def }}
@@ -347,10 +360,10 @@ jobs:
     name: Rollback if Failed
     runs-on: ubuntu-latest
     needs: deploy-prod
-    # if: failure()
+    if: failure()
 
 
-    if: always() && needs.deploy-prod.result == 'failure'
+    # if: always() && needs.deploy-prod.result == 'failure'
 
     steps:
       - name: Configure AWS
@@ -359,15 +372,32 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
+      
 
-      - name: Rollback ECS
+      - name: Download ARN Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ecs-rollback-info
+
+      - name: Execute Rollback
         run: |
-          echo "Deploy failed. Rolling back to: ${{ needs.deploy-prod.outputs.prev_task }}"
+          PREV_ARN=$(cat rollback_arn.txt)
+          echo "Rolling back to: $PREV_ARN"
           aws ecs update-service \
             --cluster infra-pipeline-prod-cluster \
             --service infra-pipeline-prod-service \
-            --task-definition ${{ needs.deploy-prod.outputs.prev_task }} \
+            --task-definition $PREV_ARN \
             --force-new-deployment
+
+            
+      # - name: Rollback ECS
+      #   run: |
+      #     echo "Deploy failed. Rolling back to: ${{ needs.deploy-prod.outputs.prev_task }}"
+      #     aws ecs update-service \
+      #       --cluster infra-pipeline-prod-cluster \
+      #       --service infra-pipeline-prod-service \
+      #       --task-definition ${{ needs.deploy-prod.outputs.prev_task }} \
+      #       --force-new-deployment
 
 
 
