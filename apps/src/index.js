@@ -4,16 +4,16 @@ const PORT = process.env.PORT || 3000;
 
 const server = http.createServer((req, res) => {
   // Health check endpoint (keep this for ALB)
-  // if (req.url === "/health") {
-  //   res.writeHead(500);
-  //   res.end("NOT OK");
-  //   return;
-  // }
   if (req.url === "/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "healthy" }));
+    res.writeHead(500);
+    res.end("NOT OK");
     return;
   }
+  // if (req.url === "/health") {
+  //   res.writeHead(200, { "Content-Type": "application/json" });
+  //   res.end(JSON.stringify({ status: "healthy" }));
+  //   return;
+  // }
 
   // Main UI response
   res.writeHead(200, { "Content-Type": "text/html" });
