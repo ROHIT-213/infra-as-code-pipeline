@@ -268,20 +268,21 @@ jobs:
     needs: [push, approval]
     if: github.ref == 'refs/heads/main'
     environment: production
-    - name: Save ARN for Rollback
-        run: |
-          TASK_ARN=$(aws ecs describe-services \
-            --cluster infra-pipeline-prod-cluster \
-            --services infra-pipeline-prod-service \
-            --query "services[0].taskDefinition" \
-            --output text)
-          echo "$TASK_ARN" > rollback_arn.txt
 
-    - name: Upload ARN Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ecs-rollback-info
-        path: rollback_arn.txt
+    name: Save ARN for Rollback
+    run: |
+      TASK_ARN=$(aws ecs describe-services \
+        --cluster infra-pipeline-prod-cluster \
+        --services infra-pipeline-prod-service \
+        --query "services[0].taskDefinition" \
+        --output text)
+      echo "$TASK_ARN" > rollback_arn.txt
+
+    name: Upload ARN Artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: ecs-rollback-info
+      path: rollback_arn.txt
     outputs:
       # prev_task: ${{ steps.current_task.outputs.task_def }}
       # task_def: ${{ steps.terraform.outputs.task_def }}
