@@ -74,6 +74,14 @@ resource "aws_ecs_task_definition" "app" {
   cpu                      = var.task_cpu   
   memory                   = var.task_memory          //comes from terraform.tfvars different per environment
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+
+  lifecycle {
+    create_before_destroy = true
+    # This prevents the previous revision from becoming INACTIVE immediately
+    # which allows ECS to keep running existing tasks until new ones are healthy
+    ignore_changes = [container_definitions]
+    
+  }
   
   # lifecycle {                                         //line added
   #   ignore_changes = [container_definitions]
