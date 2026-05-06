@@ -303,15 +303,6 @@ jobs:
           fi
 
           echo "SAVED_TASK_ARN=$TASK_ARN" >> $GITHUB_ENV
-      - name: Automated Rollback
-        if: failure()
-        run: |
-          echo "Deploy failed. Rolling back to: ${{ env.SAVED_TASK_ARN }}"
-          aws ecs update-service \
-            --cluster infra-pipeline-prod-cluster \
-            --service infra-pipeline-prod-service \
-            --task-definition ${{ env.SAVED_TASK_ARN }} \
-            --force-new-deployment
       # - name: Get Previous ACTIVE Task Definition           
       #   id: prev
       #   run: |
