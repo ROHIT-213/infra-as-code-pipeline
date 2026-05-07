@@ -347,9 +347,9 @@ jobs:
         working-directory: terraform/envs/prod
         run: terraform apply -auto-approve tfplan
       
-      - name: Health Check (5 min)
+      - name: Health Check (2 min)
         run: |
-          sleep 300
+          sleep 120
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$(aws elbv2 describe-load-balancers \
             --names infra-pipeline-prod-alb \
             --query 'LoadBalancers[0].DNSName' \
