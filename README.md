@@ -6,96 +6,18 @@ A production-grade AWS infrastructure provisioned with Terraform and deployed vi
 
 ## Architecture Diagram
 
-```
-                          ┌─────────────────────────────────────────────────────┐
-                          │                    AWS Cloud (ap-south-1)            │
-                          │                                                       │
-  Internet ──────────────►│  ┌─────────────────────────────────────────────────┐ │
-                          │  │              VPC (10.x.0.0/16)                  │ │
-                          │  │                                                  │ │
-                          │  │  ┌──────────────┐    ┌──────────────┐           │ │
-                          │  │  │Public Subnet │    │Public Subnet │           │ │
-                          │  │  │ ap-south-1a  │    │ ap-south-1b  │           │ │
-                          │  │  │  ┌────────┐  │    │              │           │ │
-                          │  │  │  │  ALB   │  │    │              │           │ │
-                          │  │  │  └───┬────┘  │    │              │           │ │
-                          │  │  │  ┌───┴────┐  │    │  ┌────────┐  │           │ │
-                          │  │  │  │  IGW   │  │    │  │  NAT   │  │           │ │
-                          │  │  │  └────────┘  │    │  └────────┘  │           │ │
-                          │  │  └──────────────┘    └──────────────┘           │ │
-                          │  │                                                  │ │
-                          │  │  ┌──────────────┐    ┌──────────────┐           │ │
-                          │  │  │Private Subnet│    │Private Subnet│           │ │
-                          │  │  │ ap-south-1a  │    │ ap-south-1b  │           │ │
-                          │  │  │ ┌──────────┐ │    │ ┌──────────┐ │           │ │
-                          │  │  │ │ECS Fargate│ │    │ │ECS Fargate│ │           │ │
-                          │  │  │ │  Tasks   │ │    │ │  Tasks   │ │           │ │
-                          │  │  │ └──────────┘ │    │ └──────────┘ │           │ │
-                          │  │  └──────────────┘    └──────────────┘           │ │
-                          │  │                                                  │ │
-                          │  │  ┌──────────────────────────────────────────┐   │ │
-                          │  │  │              ECR Repository               │   │ │
-                          │  │  └──────────────────────────────────────────┘   │ │
-                          │  └─────────────────────────────────────────────────┘ │
-                          │                                                       │
-                          │  CloudWatch Logs │ CloudWatch Alarms │ Dashboard      │
-                          └─────────────────────────────────────────────────────┘
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/e7da3921-b7aa-467a-8b06-f0ac3beaf2a5" alt="Architecture Diagram" width="850">
+</p>!
 ```
 
 ---
 
 ## Pipeline Flow Diagram
 
-```
-  Developer pushes code
-         │
-         ▼
-  ┌─────────────┐
-  │  GitHub PR  │──────────────────────────────────────────────────────┐
-  └──────┬──────┘                                                       │
-         │                                                              │
-         ▼                                                              │
-  ┌─────────────┐     fail                                             │
-  │    Lint     │──────────► ❌ Pipeline stops                         │
-  │ tf validate │                                                       │
-  │   tflint    │                                                       │
-  └──────┬──────┘                                                       │
-         │ pass                                                         │
-         ▼                                                              │
-  ┌─────────────┐     fail                                             │
-  │Docker Build │──────────► ❌ Pipeline stops                         │
-  │Health Check │                                                       │
-  └──────┬──────┘                                                       │
-         │ pass                                                         │
-         ▼                                                              │
-  ┌─────────────┐                                                       │
-  │  Push to    │                                                       │
-  │    ECR      │                                                       │
-  └──────┬──────┘                                                       │
-         │                                                              │
-         ▼                                                              │
-  ┌─────────────┐     fail + rollback                                  │
-  │  Deploy to  │──────────► ⏪ Rollback to previous task def          │
-  │   Staging   │                                                       │
-  │Health Check │                                                       │
-  └──────┬──────┘                                                       │
-         │ pass (PR merged to main) ◄────────────────────────────────┘
-         ▼
-  ┌─────────────┐
-  │   Manual    │
-  │  Approval   │◄── Reviewer approves in GitHub
-  └──────┬──────┘
-         │ approved
-         ▼
-  ┌─────────────┐     fail + rollback
-  │  Deploy to  │──────────► ⏪ Rollback to previous task def
-  │  Production │
-  │Health Check │
-  └──────┬──────┘
-         │ pass
-         ▼
-       ✅ Done
-```
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/79c20d06-cbcd-49b5-b9c1-136be9e40c1a" alt="Pipeline flow" width="850">
+</p>!
 
 ---
 
@@ -118,7 +40,7 @@ A production-grade AWS infrastructure provisioned with Terraform and deployed vi
 
 ### Prerequisites
 - AWS CLI installed and configured
-- Terraform >= 1.3.0
+- Terraform >= 1.9.0
 - Docker installed
 - GitHub repository with Actions enabled
 
@@ -147,41 +69,17 @@ Add the following secrets:
 | `AWS_ACCESS_KEY_ID` | Your AWS Access Key ID |
 | `AWS_SECRET_ACCESS_KEY` | Your AWS Secret Access Key |
 
-### Step 4 — Initialize Terraform for each environment
-```bash
-cd terraform/envs/dev
-terraform init
-terraform validate
-terraform plan -var-file=terraform.tfvars
-
-cd ../staging
-terraform init
-
-cd ../prod
-terraform init
-```
-
-### Step 5 — Deploy via pipeline
-```bash
-# Create a feature branch
-git checkout -b feature/my-change
+### Step 4 — Deploy via pipeline
 
 # Make changes, commit and push
 git add .
 git commit -m "feat: describe your change"
-git push origin feature/my-change
+git push origin main
 
 # Open a Pull Request → triggers staging deployment
 # Merge to main → triggers production deployment (with approval)
 ```
 
-### Step 6 — Manual deploy (if needed)
-```bash
-cd terraform/envs/staging
-terraform apply -var-file=terraform.tfvars -var="container_image=<ecr-image-uri>"
-```
-
----
 
 ## Runbook — Common Failure Scenarios
 
